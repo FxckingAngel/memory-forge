@@ -14,7 +14,27 @@ full-text search.
 - MCP tools for remember, search, context, update, and forget.
 - Soft-delete by default so accidental forgets can be recovered from backups.
 - Project, tag, source-agent, and importance metadata.
+- Token-budgeted context retrieval to avoid duplicate long-term memory blocks.
 - Works with any MCP client that can launch a stdio server.
+
+## Single-Memory Mode
+
+Memory Forge should be the agent's source of truth for durable memory. Do not
+also paste a long memory summary into the agent's system prompt or project
+instructions, because that makes the model pay for the same memory twice.
+
+Recommended agent instruction:
+
+```text
+Use Memory Forge as the only durable memory source. Do not maintain or repeat a
+separate long-term memory block in the prompt. When prior context is needed,
+call memory_context with a focused query, project, and max_chars budget. Save
+new durable facts with memory_remember only when they will help future sessions.
+```
+
+Use small `memory_context` budgets by default, then request more only when the
+task genuinely needs it. A good starting point is `max_chars: 2000` for normal
+coding tasks and `max_chars: 6000` for broad project orientation.
 
 ## Install
 
@@ -78,9 +98,14 @@ Return compact prompt-ready context for an agent.
 {
   "query": "database setup",
   "project": "example-project",
-  "limit": 8
+  "limit": 8,
+  "max_chars": 2000
 }
 ```
+
+The response includes `context`, `count`, `max_chars`, `truncated`, and the raw
+matching `memories`. Clients should inject only the `context` string into the
+working prompt.
 
 ### `memory_update`
 

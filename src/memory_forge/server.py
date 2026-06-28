@@ -6,7 +6,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from memory_forge.store import DEFAULT_LIMIT, MemoryStore
+from memory_forge.store import DEFAULT_CONTEXT_CHARS, DEFAULT_LIMIT, MemoryStore
 
 mcp = FastMCP("Memory Forge")
 
@@ -70,14 +70,16 @@ def memory_context(
     tags: list[str] | None = None,
     source_agent: str | None = None,
     limit: int = 8,
+    max_chars: int = DEFAULT_CONTEXT_CHARS,
 ) -> dict[str, Any]:
-    """Return compact prompt-ready memory context."""
+    """Return compact prompt-ready memory context within a character budget."""
     return get_store().context(
         query=query,
         project=project,
         tags=tags,
         source_agent=source_agent,
         limit=limit,
+        max_chars=max_chars,
     )
 
 

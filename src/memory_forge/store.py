@@ -11,6 +11,8 @@ from memory_forge.models import Memory, utc_now
 
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 50
+DEFAULT_CONTEXT_CHARS = 4000
+MAX_CONTEXT_CHARS = 20000
 
 
 class MemoryStore:
@@ -119,7 +121,9 @@ class MemoryStore:
         tags: list[str] | None = None,
         source_agent: str | None = None,
         limit: int = 8,
+        max_chars: int = DEFAULT_CONTEXT_CHARS,
     ) -> dict[str, Any]:
+        clean_max_chars = _clean_max_chars(max_chars)
         memories = self.search(
             query=query,
             project=project,
@@ -137,9 +141,12 @@ class MemoryStore:
             prefix = f"[{'; '.join(labels)}] " if labels else ""
             lines.append(f"- {prefix}{memory.content}")
 
+        context_text, truncated = _fit_context_lines(lines, clean_max_chars)
         return {
             "count": len(memories),
-            "context": "\n".join(lines),
+            "context": context_text,
+            "max_chars": clean_max_chars,
+            "truncated": truncated,
             "memories": [memory.to_dict() for memory in memories],
         }
 
@@ -352,6 +359,33 @@ def _clean_importance(importance: int) -> int:
 
 def _clean_limit(limit: int) -> int:
     return max(1, min(limit, MAX_LIMIT))
+
+
+def _clean_max_chars(max_chars: int) -> int:
+    return max(200, min(max_chars, MAX_CONTEXT_CHARS))
+
+
+def _fit_context_lines(lines: list[str], max_chars: int) -> tuple[str, bool]:
+    selected = []
+    used = 0
+    truncated = False
+
+    for line in lines:
+        separator = 1 if selected else 0
+        remaining = max_chars - used - separator
+        if remaining <= 0:
+            truncated = True
+            break
+        if len(line) <= remaining:
+            selected.append(line)
+            used += len(line) + separator
+            continue
+        if remaining > 20:
+            selected.append(f"{line[: remaining - 3].rstrip()}...")
+        truncated = True
+        break
+
+    return "\n".join(selected), truncated
 
 
 def _to_fts_query(query: str | None) -> str | None:

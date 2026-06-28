@@ -102,6 +102,24 @@ def test_context_returns_prompt_ready_lines(store):
     assert context["memories"][0]["project"] == "memory-forge"
 
 
+def test_context_respects_character_budget(store):
+    store.remember(
+        (
+            "This is a very long memory that should be shortened when the context "
+            "budget is small. "
+            * 8
+        ),
+        tags=["budget"],
+        project="memory-forge",
+    )
+
+    context = store.context(query="shortened", max_chars=200)
+
+    assert len(context["context"]) <= 200
+    assert context["truncated"] is True
+    assert context["max_chars"] == 200
+
+
 def test_validation_rejects_bad_inputs(store):
     with pytest.raises(ValueError, match="content"):
         store.remember("   ")
