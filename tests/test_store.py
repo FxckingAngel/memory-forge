@@ -100,6 +100,8 @@ def test_context_returns_prompt_ready_lines(store):
     assert context["count"] == 1
     assert "- [memory-forge; privacy] The project should stay local-first." in context["context"]
     assert context["memories"][0]["project"] == "memory-forge"
+    assert context["usage"]["chars"] == len(context["context"])
+    assert context["usage"]["estimated_tokens"] > 0
 
 
 def test_context_respects_character_budget(store):
@@ -118,6 +120,44 @@ def test_context_respects_character_budget(store):
     assert len(context["context"]) <= 200
     assert context["truncated"] is True
     assert context["max_chars"] == 200
+    assert context["usage"]["max_estimated_tokens"] == 50
+
+
+def test_compact_active_context_reports_usage_and_deduplicates(store):
+    result = store.compact(
+        """
+        User wants Memory Forge to handle active context.
+        User wants Memory Forge to handle active context.
+        The client should send active context when it wants compaction.
+        """,
+        project="memory-forge",
+        tags=["context"],
+        source_agent="codex",
+        max_chars=200,
+    )
+
+    assert result["compacted_context"].count(
+        "User wants Memory Forge to handle active context."
+    ) == 1
+    assert "client should send active context" in result["compacted_context"]
+    assert result["saved_memory"] is None
+    assert result["usage"]["chars"] == len(result["compacted_context"])
+
+
+def test_compact_can_save_result_as_memory(store):
+    result = store.compact(
+        "Memory Forge should own durable memory and compacted context.",
+        project="memory-forge",
+        tags=["design"],
+        source_agent="codex",
+        save=True,
+    )
+
+    saved = result["saved_memory"]
+    assert saved is not None
+    assert saved["project"] == "memory-forge"
+    assert saved["tags"] == ["design", "compacted-context"]
+    assert store.search("compacted context")[0].id == saved["id"]
 
 
 def test_validation_rejects_bad_inputs(store):

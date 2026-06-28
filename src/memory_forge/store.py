@@ -13,6 +13,7 @@ DEFAULT_LIMIT = 10
 MAX_LIMIT = 50
 DEFAULT_CONTEXT_CHARS = 4000
 MAX_CONTEXT_CHARS = 20000
+ESTIMATED_CHARS_PER_TOKEN = 4
 
 
 class MemoryStore:
@@ -147,7 +148,43 @@ class MemoryStore:
             "context": context_text,
             "max_chars": clean_max_chars,
             "truncated": truncated,
+            "usage": _usage(context_text, clean_max_chars),
             "memories": [memory.to_dict() for memory in memories],
+        }
+
+    def compact(
+        self,
+        active_context: str,
+        project: str | None = None,
+        tags: list[str] | None = None,
+        source_agent: str | None = None,
+        importance: int = 3,
+        max_chars: int = DEFAULT_CONTEXT_CHARS,
+        save: bool = False,
+    ) -> dict[str, Any]:
+        clean_context = _clean_content(active_context)
+        clean_max_chars = _clean_max_chars(max_chars)
+        compacted, truncated = _fit_context_lines(
+            _compact_lines(clean_context),
+            clean_max_chars,
+        )
+        saved_memory = None
+        if save:
+            compact_tags = [*_clean_tags(tags), "compacted-context"]
+            saved_memory = self.remember(
+                content=compacted,
+                tags=compact_tags,
+                project=project,
+                source_agent=source_agent,
+                importance=importance,
+            ).to_dict()
+
+        return {
+            "compacted_context": compacted,
+            "max_chars": clean_max_chars,
+            "truncated": truncated,
+            "usage": _usage(compacted, clean_max_chars),
+            "saved_memory": saved_memory,
         }
 
     def update(
@@ -363,6 +400,40 @@ def _clean_limit(limit: int) -> int:
 
 def _clean_max_chars(max_chars: int) -> int:
     return max(200, min(max_chars, MAX_CONTEXT_CHARS))
+
+
+def _usage(text: str, max_chars: int) -> dict[str, int]:
+    return {
+        "chars": len(text),
+        "estimated_tokens": _estimate_tokens(text),
+        "max_chars": max_chars,
+        "max_estimated_tokens": max(1, (max_chars + ESTIMATED_CHARS_PER_TOKEN - 1) // ESTIMATED_CHARS_PER_TOKEN),
+    }
+
+
+def _estimate_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return max(1, (len(text) + ESTIMATED_CHARS_PER_TOKEN - 1) // ESTIMATED_CHARS_PER_TOKEN)
+
+
+def _compact_lines(text: str) -> list[str]:
+    lines = []
+    seen = set()
+    for raw_line in text.splitlines():
+        line = " ".join(raw_line.strip().split())
+        if not line:
+            continue
+        if len(line) > 240:
+            line = f"{line[:237].rstrip()}..."
+        key = line.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(f"- {line}")
+    if lines:
+        return lines
+    return [f"- {' '.join(text.split())}"]
 
 
 def _fit_context_lines(lines: list[str], max_chars: int) -> tuple[str, bool]:

@@ -12,8 +12,9 @@ SERVER_INSTRUCTIONS = (
     "Use Memory Forge as the only durable memory source. Do not maintain or "
     "repeat a separate long-term memory block in the prompt. Retrieve focused "
     "context with memory_context using project/query/max_chars, then inject "
-    "only the returned context string. Save new durable facts with "
-    "memory_remember only when they will help future sessions."
+    "only the returned context string. When active chat context grows large, "
+    "send it to memory_compact instead of carrying it forever. Save new durable "
+    "facts with memory_remember only when they will help future sessions."
 )
 
 mcp = FastMCP("Memory Forge", instructions=SERVER_INSTRUCTIONS)
@@ -88,6 +89,28 @@ def memory_context(
         source_agent=source_agent,
         limit=limit,
         max_chars=max_chars,
+    )
+
+
+@mcp.tool()
+def memory_compact(
+    active_context: str,
+    project: str | None = None,
+    tags: list[str] | None = None,
+    source_agent: str | None = None,
+    importance: int = 3,
+    max_chars: int = DEFAULT_CONTEXT_CHARS,
+    save: bool = False,
+) -> dict[str, Any]:
+    """Compact active context supplied by a client and optionally store it."""
+    return get_store().compact(
+        active_context=active_context,
+        project=project,
+        tags=tags,
+        source_agent=source_agent,
+        importance=importance,
+        max_chars=max_chars,
+        save=save,
     )
 
 

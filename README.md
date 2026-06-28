@@ -15,6 +15,9 @@ full-text search.
 - Soft-delete by default so accidental forgets can be recovered from backups.
 - Project, tag, source-agent, and importance metadata.
 - Token-budgeted context retrieval to avoid duplicate long-term memory blocks.
+- Usage estimates on retrieved context so clients can see read cost.
+- Active-context compaction through `memory_compact` when clients send the
+  working context they want Memory Forge to own.
 - Works with any MCP client that can launch a stdio server.
 
 ## Single-Memory Mode
@@ -35,6 +38,10 @@ new durable facts with memory_remember only when they will help future sessions.
 Use small `memory_context` budgets by default, then request more only when the
 task genuinely needs it. A good starting point is `max_chars: 2000` for normal
 coding tasks and `max_chars: 6000` for broad project orientation.
+
+See [Memory Model Guide](docs/memory-model.md) for token-budget guidance,
+active-context boundaries, compaction expectations, and setup rules for other
+open-source agents.
 
 ## Install
 
@@ -104,8 +111,30 @@ Return compact prompt-ready context for an agent.
 ```
 
 The response includes `context`, `count`, `max_chars`, `truncated`, and the raw
-matching `memories`. Clients should inject only the `context` string into the
+matching `memories`. It also includes `usage` with character count and rough
+token estimates. Clients should inject only the `context` string into the
 working prompt.
+
+### `memory_compact`
+
+Compact active context supplied by a client and optionally store the compacted
+result in Memory Forge.
+
+```json
+{
+  "active_context": "Current chat notes or working context supplied by the client.",
+  "project": "example-project",
+  "tags": ["handoff"],
+  "source_agent": "codex",
+  "max_chars": 2000,
+  "save": true
+}
+```
+
+MCP servers cannot read a client's hidden prompt or chat buffer by themselves.
+Clients that want Memory Forge to handle active context should call
+`memory_compact` before the working context grows too large, then keep only the
+returned `compacted_context` or saved memory reference.
 
 ### `memory_update`
 
