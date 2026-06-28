@@ -20,10 +20,13 @@ Agents usually have several kinds of context:
 - Retrieved memory: a small selection of durable memory added to the current
   prompt for one task.
 
-Memory Forge owns durable memory, retrieved memory, usage reporting, and
-client-supplied active-context compaction. It cannot read a client's hidden chat
-buffer by itself; the client must send active context to `memory_compact` when
-it wants Memory Forge to take over that state.
+Memory Forge owns durable memory, retrieved memory, usage reporting, and every
+active-context chunk the client can explicitly supply for compaction. It cannot
+read a client's hidden chat buffer by itself; the client must send active
+context to `memory_compact` when it wants Memory Forge to take over that state.
+After compaction, the client must replace the bulky active context with the
+compacted result or a saved memory reference; keeping both still fills the model
+window.
 
 ## Why Active Chat Context Still Exists
 
@@ -34,15 +37,16 @@ The active chat context is the agent's working area. It contains things like:
 - Command outputs from the current task.
 - Code snippets or diffs currently being discussed.
 
-This should stay short-lived. Do not copy the whole active chat into Memory
-Forge. Save only stable facts that future sessions should know.
+This should stay short-lived. Do not save the whole active chat as durable
+memory. For usage reduction, compact bulky active context as soon as it is no
+longer needed verbatim, then keep only the compacted result in the prompt. Save
+only stable facts that future sessions should know.
 
 Good durable memories:
 
 - "This project uses Memory Forge as its single durable memory source."
 - "Use SQLite FTS for v1 search."
-- "Codex built-in memories are disabled on this machine to avoid duplicate
-  context."
+- "The local client disables built-in memories to avoid duplicate context."
 
 Bad durable memories:
 
@@ -71,6 +75,32 @@ Use the smallest budget that can answer the current question. Increase it only
 when the returned `truncated` field is `true` or the task clearly needs broader
 project orientation.
 
+If the client knows the model context window, use model-window budgeting instead
+of guessing only with `max_chars`:
+
+```json
+{
+  "context_window_tokens": 128000,
+  "reserved_prompt_tokens": 24000,
+  "reserved_output_tokens": 4000,
+  "max_chars": 6000
+}
+```
+
+Memory Forge then computes the memory budget from:
+
+```text
+available_memory_tokens = context_window_tokens
+  - reserved_prompt_tokens
+  - reserved_output_tokens
+```
+
+`reserved_prompt_tokens` is for live non-memory content the client still plans
+to send, such as the current user request, system instructions, selected tool
+output, and code snippets. `reserved_output_tokens` is for the model response.
+The returned `usage.fits_context_window` tells whether Memory Forge's returned
+text fits that declared memory slice.
+
 Example response fields:
 
 ```json
@@ -96,7 +126,10 @@ At the start of a task:
   "project": "memory-forge",
   "query": "focused task keywords",
   "limit": 5,
-  "max_chars": 1200
+  "max_chars": 1200,
+  "context_window_tokens": 128000,
+  "reserved_prompt_tokens": 12000,
+  "reserved_output_tokens": 4000
 }
 ```
 
@@ -112,6 +145,9 @@ During the task:
 At the end of a task:
 
 - Save only durable facts with `memory_remember`.
+- Save user-declared durable instructions immediately when the user says
+  "remember this", "always", "prefer", "never", or gives a stable recurring
+  rule such as always reading a project file.
 - Prefer one concise memory over many tiny notes.
 - Do not save facts already checked into `README.md`, `AGENTS.md`, or other
   docs unless they are useful as quick recall.
@@ -119,9 +155,10 @@ At the end of a task:
 ## Avoiding Double Memory
 
 When using Memory Forge, turn off other durable memory systems if the client
-supports it.
+supports it. Built-in memory can duplicate retrieved Memory Forge context and
+increase token usage.
 
-For Codex:
+For clients that support Codex-style memory settings:
 
 ```toml
 [features]
@@ -136,18 +173,63 @@ disable_on_external_context = true
 Then configure Memory Forge as an MCP server and rely on `memory_context` for
 retrieval.
 
+For Codex, the release setup command applies those settings and registers the
+Memory Forge MCP server:
+
+```powershell
+memory-forge-setup codex
+```
+
+When developing from a checkout:
+
+```powershell
+uv run memory-forge-setup codex --from-checkout .
+```
+
 For other clients:
 
 - Disable built-in long-term memory if possible.
 - Remove hand-written "memory" sections from system prompts.
 - Keep project rules in checked-in docs, not generated memory summaries.
-- Add an instruction that Memory Forge is the only durable memory source.
+- Add an instruction that Memory Forge is the memory layer for durable memory
+  and every active-context chunk the client can explicitly supply for
+  compaction.
 
 ## Compaction
 
-Memory Forge should handle compaction when the client supplies active context
-to `memory_compact`. This moves long working context out of the prompt and into
-a budgeted compact form.
+Memory Forge should handle compaction whenever the client can supply active
+context to `memory_compact`. This moves long working context out of the prompt
+and into a budgeted compact form.
+
+If a model still reaches its context limit while using Memory Forge, the likely
+cause is not durable memory retrieval. It means the client is carrying too much
+non-memory prompt content, such as long transcripts, large tool outputs, or file
+excerpts. The fix is to send that bulky active context to `memory_compact`, then
+replace it in the prompt with the compacted result.
+
+## Beyond MCP
+
+The MCP server cannot see hidden client chat buffers or arbitrary local files on
+its own. Memory Forge can still support those sources through an explicit client
+integration or release installer that runs with user permission.
+
+Possible integration jobs:
+
+- Configure Codex-style clients to disable built-in memory and register Memory
+  Forge as the MCP memory backend.
+- Import accessible Codex chat history into compacted memories when the user
+  opts in.
+- Index selected repositories or local folders into compact summaries.
+- Watch specific project instruction files, such as `AGENTS.md`, and refresh
+  durable recall memories when those rules change.
+
+Codex setup ships first. Claude Code should use the same integration shape next:
+configure the client, avoid duplicate memory, and make history imports or file
+indexing explicit opt-in actions.
+
+These jobs should be opt-in, local-first, and scoped to selected files or
+client data. They should skip secrets and avoid storing whole transcripts or
+entire source files as durable memories.
 
 Compaction may still happen because:
 
@@ -173,11 +255,13 @@ For any MCP-capable coding agent:
 4. Add this instruction to the client:
 
 ```text
-Use Memory Forge as the only durable memory source. Do not maintain or repeat a
-separate long-term memory block in the prompt. Retrieve focused context with
+Use Memory Forge as the memory layer for durable memory and every active-context
+chunk the client can explicitly supply for compaction. Do not maintain or repeat
+a separate long-term memory block in the prompt. Retrieve focused context with
 memory_context using project/query/max_chars, then inject only the returned
-context string. Save new durable facts with memory_remember only when they will
-help future sessions.
+context string. Use memory_compact for bulky active context the client can send
+as soon as it is no longer needed verbatim. Save new durable facts with
+memory_remember only when they will help future sessions.
 ```
 
 5. Start each task with a small `memory_context` call.

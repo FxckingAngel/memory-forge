@@ -51,6 +51,17 @@ def test_search_filters_by_project_tags_and_limit(store):
     assert results[0].tags == ["db"]
 
 
+def test_search_relaxes_multi_term_query_when_exact_match_misses(store):
+    memory = store.remember(
+        "Memory Forge handles durable memory and active context.",
+        project="memory-forge",
+    )
+
+    results = store.search("Memory Forge hidden history", project="memory-forge")
+
+    assert results == [memory]
+
+
 def test_update_reindexes_search(store):
     memory = store.remember("The old backend uses flat files.", tags=["backend"])
 
@@ -102,6 +113,25 @@ def test_context_returns_prompt_ready_lines(store):
     assert context["memories"][0]["project"] == "memory-forge"
     assert context["usage"]["chars"] == len(context["context"])
     assert context["usage"]["estimated_tokens"] > 0
+    assert context["usage"]["fits_context_window"] is True
+
+
+def test_context_falls_back_to_project_memories_when_query_misses(store):
+    store.remember(
+        "Always read AGENTS.md before changing this project.",
+        tags=["agent-guidance"],
+        project="memory-forge",
+        importance=5,
+    )
+
+    context = store.context(
+        query="unrelated hidden codex transcript",
+        project="memory-forge",
+    )
+
+    assert context["count"] == 1
+    assert context["fallback_used"] is True
+    assert "Always read AGENTS.md" in context["context"]
 
 
 def test_context_respects_character_budget(store):
@@ -123,6 +153,25 @@ def test_context_respects_character_budget(store):
     assert context["usage"]["max_estimated_tokens"] == 50
 
 
+def test_context_can_budget_against_model_context_window(store):
+    store.remember("alpha " * 200, project="memory-forge")
+
+    context = store.context(
+        project="memory-forge",
+        max_chars=1000,
+        context_window_tokens=120,
+        reserved_prompt_tokens=20,
+        reserved_output_tokens=80,
+    )
+
+    assert context["max_chars"] == 80
+    assert context["usage"]["context_window_tokens"] == 120
+    assert context["usage"]["reserved_prompt_tokens"] == 20
+    assert context["usage"]["reserved_output_tokens"] == 80
+    assert context["usage"]["available_memory_tokens"] == 20
+    assert context["usage"]["fits_context_window"] is True
+
+
 def test_compact_active_context_reports_usage_and_deduplicates(store):
     result = store.compact(
         """
@@ -142,6 +191,21 @@ def test_compact_active_context_reports_usage_and_deduplicates(store):
     assert "client should send active context" in result["compacted_context"]
     assert result["saved_memory"] is None
     assert result["usage"]["chars"] == len(result["compacted_context"])
+
+
+def test_compact_can_budget_against_model_context_window(store):
+    result = store.compact(
+        "line one\nline two\nline three",
+        context_window_tokens=100,
+        reserved_prompt_tokens=10,
+        reserved_output_tokens=60,
+        max_chars=1000,
+    )
+
+    assert result["max_chars"] == 120
+    assert result["usage"]["reserved_prompt_tokens"] == 10
+    assert result["usage"]["available_memory_tokens"] == 30
+    assert result["usage"]["fits_context_window"] is True
 
 
 def test_compact_can_save_result_as_memory(store):

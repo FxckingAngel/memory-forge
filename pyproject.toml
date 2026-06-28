@@ -1,7 +1,7 @@
 [project]
 name = "memory-forge"
 version = "0.1.0"
-description = "Local-first MCP memory backend for Codex-style AI agents."
+description = "Local-first MCP memory backend for AI clients."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -20,6 +20,7 @@ Issues = "https://github.com/FxckingAngel/memory-forge/issues"
 
 [project.scripts]
 memory-forge = "memory_forge.server:main"
+memory-forge-setup = "memory_forge.setup:main"
 
 [dependency-groups]
 dev = [

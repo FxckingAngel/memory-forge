@@ -6,15 +6,27 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from memory_forge.store import DEFAULT_CONTEXT_CHARS, DEFAULT_LIMIT, MemoryStore
+from memory_forge.store import (
+    DEFAULT_CONTEXT_CHARS,
+    DEFAULT_LIMIT,
+    DEFAULT_RESERVED_PROMPT_TOKENS,
+    DEFAULT_RESERVED_OUTPUT_TOKENS,
+    MemoryStore,
+)
 
 SERVER_INSTRUCTIONS = (
-    "Use Memory Forge as the only durable memory source. Do not maintain or "
-    "repeat a separate long-term memory block in the prompt. Retrieve focused "
-    "context with memory_context using project/query/max_chars, then inject "
-    "only the returned context string. When active chat context grows large, "
-    "send it to memory_compact instead of carrying it forever. Save new durable "
-    "facts with memory_remember only when they will help future sessions."
+    "Always use Memory Forge as the agent memory layer for durable memory and "
+    "every active-context chunk the client can explicitly supply for compaction. "
+    "Do not use built-in durable memory, hand-written memory blocks, or repeated "
+    "prompt summaries. Retrieve focused context with memory_context using "
+    "project/query plus max_chars or context_window_tokens, then inject only the "
+    "returned context string. Pass reserved_prompt_tokens for live non-memory "
+    "prompt content so Memory Forge can fit memory inside the same model window. "
+    "When active chat context is no longer needed verbatim, send it to "
+    "memory_compact and replace the bulky prompt content with the compacted "
+    "result. If the user says remember this, always, prefer, never, or gives a "
+    "stable recurring instruction such as always read a file, save it with "
+    "memory_remember."
 )
 
 mcp = FastMCP("Memory Forge", instructions=SERVER_INSTRUCTIONS)
@@ -80,8 +92,11 @@ def memory_context(
     source_agent: str | None = None,
     limit: int = 8,
     max_chars: int = DEFAULT_CONTEXT_CHARS,
+    context_window_tokens: int | None = None,
+    reserved_prompt_tokens: int = DEFAULT_RESERVED_PROMPT_TOKENS,
+    reserved_output_tokens: int = DEFAULT_RESERVED_OUTPUT_TOKENS,
 ) -> dict[str, Any]:
-    """Return compact prompt-ready memory context within a character budget."""
+    """Return prompt-ready memory context within a char or model-window budget."""
     return get_store().context(
         query=query,
         project=project,
@@ -89,6 +104,9 @@ def memory_context(
         source_agent=source_agent,
         limit=limit,
         max_chars=max_chars,
+        context_window_tokens=context_window_tokens,
+        reserved_prompt_tokens=reserved_prompt_tokens,
+        reserved_output_tokens=reserved_output_tokens,
     )
 
 
@@ -100,6 +118,9 @@ def memory_compact(
     source_agent: str | None = None,
     importance: int = 3,
     max_chars: int = DEFAULT_CONTEXT_CHARS,
+    context_window_tokens: int | None = None,
+    reserved_prompt_tokens: int = DEFAULT_RESERVED_PROMPT_TOKENS,
+    reserved_output_tokens: int = DEFAULT_RESERVED_OUTPUT_TOKENS,
     save: bool = False,
 ) -> dict[str, Any]:
     """Compact active context supplied by a client and optionally store it."""
@@ -110,6 +131,9 @@ def memory_compact(
         source_agent=source_agent,
         importance=importance,
         max_chars=max_chars,
+        context_window_tokens=context_window_tokens,
+        reserved_prompt_tokens=reserved_prompt_tokens,
+        reserved_output_tokens=reserved_output_tokens,
         save=save,
     )
 

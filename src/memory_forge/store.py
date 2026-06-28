@@ -14,6 +14,8 @@ MAX_LIMIT = 50
 DEFAULT_CONTEXT_CHARS = 4000
 MAX_CONTEXT_CHARS = 20000
 ESTIMATED_CHARS_PER_TOKEN = 4
+DEFAULT_RESERVED_OUTPUT_TOKENS = 4000
+DEFAULT_RESERVED_PROMPT_TOKENS = 0
 
 
 class MemoryStore:
@@ -89,31 +91,51 @@ class MemoryStore:
             )
             params.append(tag)
 
-        fts_query = _to_fts_query(query)
+        fts_query = _to_fts_query(query, operator="AND")
         if fts_query:
-            sql = f"""
-                SELECT m.*
-                FROM memories_fts f
-                JOIN memories m ON m.rowid = f.rowid
-                WHERE memories_fts MATCH ?
-                  AND {' AND '.join(clauses)}
-                ORDER BY bm25(memories_fts), m.importance DESC, m.updated_at DESC
-                LIMIT ?
-            """
-            params = [fts_query, *params, clean_limit]
+            rows = self._search_fts(fts_query, clauses, params, clean_limit)
+            if not rows:
+                relaxed_query = _to_fts_query(query, operator="OR")
+                if relaxed_query and relaxed_query != fts_query:
+                    rows = self._search_fts(relaxed_query, clauses, params, clean_limit)
         else:
-            sql = f"""
-                SELECT m.*
-                FROM memories m
-                WHERE {' AND '.join(clauses)}
-                ORDER BY m.importance DESC, m.updated_at DESC
-                LIMIT ?
-            """
-            params.append(clean_limit)
-
-        with self._connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
+            rows = self._search_recent(clauses, params, clean_limit)
         return [_memory_from_row(row) for row in rows]
+
+    def _search_fts(
+        self,
+        fts_query: str,
+        clauses: list[str],
+        params: list[Any],
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        sql = f"""
+            SELECT m.*
+            FROM memories_fts f
+            JOIN memories m ON m.rowid = f.rowid
+            WHERE memories_fts MATCH ?
+              AND {' AND '.join(clauses)}
+            ORDER BY bm25(memories_fts), m.importance DESC, m.updated_at DESC
+            LIMIT ?
+        """
+        with self._connect() as conn:
+            return conn.execute(sql, [fts_query, *params, limit]).fetchall()
+
+    def _search_recent(
+        self,
+        clauses: list[str],
+        params: list[Any],
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        sql = f"""
+            SELECT m.*
+            FROM memories m
+            WHERE {' AND '.join(clauses)}
+            ORDER BY m.importance DESC, m.updated_at DESC
+            LIMIT ?
+        """
+        with self._connect() as conn:
+            return conn.execute(sql, [*params, limit]).fetchall()
 
     def context(
         self,
@@ -123,8 +145,16 @@ class MemoryStore:
         source_agent: str | None = None,
         limit: int = 8,
         max_chars: int = DEFAULT_CONTEXT_CHARS,
+        context_window_tokens: int | None = None,
+        reserved_prompt_tokens: int = DEFAULT_RESERVED_PROMPT_TOKENS,
+        reserved_output_tokens: int = DEFAULT_RESERVED_OUTPUT_TOKENS,
     ) -> dict[str, Any]:
-        clean_max_chars = _clean_max_chars(max_chars)
+        budget = _budget(
+            max_chars,
+            context_window_tokens,
+            reserved_prompt_tokens,
+            reserved_output_tokens,
+        )
         memories = self.search(
             query=query,
             project=project,
@@ -132,6 +162,15 @@ class MemoryStore:
             source_agent=source_agent,
             limit=limit,
         )
+        fallback_used = False
+        if query and not memories and any([project, tags, source_agent]):
+            memories = self.search(
+                project=project,
+                tags=tags,
+                source_agent=source_agent,
+                limit=limit,
+            )
+            fallback_used = bool(memories)
         lines = []
         for memory in memories:
             labels = []
@@ -142,13 +181,14 @@ class MemoryStore:
             prefix = f"[{'; '.join(labels)}] " if labels else ""
             lines.append(f"- {prefix}{memory.content}")
 
-        context_text, truncated = _fit_context_lines(lines, clean_max_chars)
+        context_text, truncated = _fit_context_lines(lines, budget["max_chars"])
         return {
             "count": len(memories),
             "context": context_text,
-            "max_chars": clean_max_chars,
+            "max_chars": budget["max_chars"],
             "truncated": truncated,
-            "usage": _usage(context_text, clean_max_chars),
+            "fallback_used": fallback_used,
+            "usage": _usage(context_text, budget),
             "memories": [memory.to_dict() for memory in memories],
         }
 
@@ -160,13 +200,21 @@ class MemoryStore:
         source_agent: str | None = None,
         importance: int = 3,
         max_chars: int = DEFAULT_CONTEXT_CHARS,
+        context_window_tokens: int | None = None,
+        reserved_prompt_tokens: int = DEFAULT_RESERVED_PROMPT_TOKENS,
+        reserved_output_tokens: int = DEFAULT_RESERVED_OUTPUT_TOKENS,
         save: bool = False,
     ) -> dict[str, Any]:
         clean_context = _clean_content(active_context)
-        clean_max_chars = _clean_max_chars(max_chars)
+        budget = _budget(
+            max_chars,
+            context_window_tokens,
+            reserved_prompt_tokens,
+            reserved_output_tokens,
+        )
         compacted, truncated = _fit_context_lines(
             _compact_lines(clean_context),
-            clean_max_chars,
+            budget["max_chars"],
         )
         saved_memory = None
         if save:
@@ -181,9 +229,9 @@ class MemoryStore:
 
         return {
             "compacted_context": compacted,
-            "max_chars": clean_max_chars,
+            "max_chars": budget["max_chars"],
             "truncated": truncated,
-            "usage": _usage(compacted, clean_max_chars),
+            "usage": _usage(compacted, budget),
             "saved_memory": saved_memory,
         }
 
@@ -402,19 +450,67 @@ def _clean_max_chars(max_chars: int) -> int:
     return max(200, min(max_chars, MAX_CONTEXT_CHARS))
 
 
-def _usage(text: str, max_chars: int) -> dict[str, int]:
+def _clean_window_chars(max_chars: int) -> int:
+    return max(1, min(max_chars, MAX_CONTEXT_CHARS))
+
+
+def _budget(
+    max_chars: int,
+    context_window_tokens: int | None,
+    reserved_prompt_tokens: int,
+    reserved_output_tokens: int,
+) -> dict[str, int | None]:
+    clean_max_chars = _clean_max_chars(max_chars)
+    if context_window_tokens is None:
+        return {
+            "max_chars": clean_max_chars,
+            "context_window_tokens": None,
+            "reserved_prompt_tokens": None,
+            "reserved_output_tokens": None,
+            "available_memory_tokens": _estimate_tokens_by_chars(clean_max_chars),
+        }
+
+    clean_window = max(1, context_window_tokens)
+    clean_reserved_prompt = max(0, reserved_prompt_tokens)
+    clean_reserved = max(0, reserved_output_tokens)
+    available_tokens = max(1, clean_window - clean_reserved_prompt - clean_reserved)
+    window_chars = min(clean_max_chars, available_tokens * ESTIMATED_CHARS_PER_TOKEN)
+    return {
+        "max_chars": _clean_window_chars(window_chars),
+        "context_window_tokens": clean_window,
+        "reserved_prompt_tokens": clean_reserved_prompt,
+        "reserved_output_tokens": clean_reserved,
+        "available_memory_tokens": available_tokens,
+    }
+
+
+def _usage(text: str, budget: dict[str, int | None]) -> dict[str, int | bool | None]:
+    max_chars = int(budget["max_chars"] or DEFAULT_CONTEXT_CHARS)
+    estimated_tokens = _estimate_tokens(text)
+    available_memory_tokens = int(
+        budget["available_memory_tokens"] or _estimate_tokens_by_chars(max_chars)
+    )
     return {
         "chars": len(text),
-        "estimated_tokens": _estimate_tokens(text),
+        "estimated_tokens": estimated_tokens,
         "max_chars": max_chars,
-        "max_estimated_tokens": max(1, (max_chars + ESTIMATED_CHARS_PER_TOKEN - 1) // ESTIMATED_CHARS_PER_TOKEN),
+        "max_estimated_tokens": _estimate_tokens_by_chars(max_chars),
+        "context_window_tokens": budget["context_window_tokens"],
+        "reserved_prompt_tokens": budget["reserved_prompt_tokens"],
+        "reserved_output_tokens": budget["reserved_output_tokens"],
+        "available_memory_tokens": available_memory_tokens,
+        "fits_context_window": estimated_tokens <= available_memory_tokens,
     }
 
 
 def _estimate_tokens(text: str) -> int:
     if not text:
         return 0
-    return max(1, (len(text) + ESTIMATED_CHARS_PER_TOKEN - 1) // ESTIMATED_CHARS_PER_TOKEN)
+    return _estimate_tokens_by_chars(len(text))
+
+
+def _estimate_tokens_by_chars(chars: int) -> int:
+    return max(1, (chars + ESTIMATED_CHARS_PER_TOKEN - 1) // ESTIMATED_CHARS_PER_TOKEN)
 
 
 def _compact_lines(text: str) -> list[str]:
@@ -459,10 +555,23 @@ def _fit_context_lines(lines: list[str], max_chars: int) -> tuple[str, bool]:
     return "\n".join(selected), truncated
 
 
-def _to_fts_query(query: str | None) -> str | None:
+def _to_fts_query(query: str | None, operator: str = "AND") -> str | None:
     if not query:
         return None
-    terms = re.findall(r"[\w-]+", query.lower())
+    terms = _query_terms(query)
     if not terms:
         return None
-    return " AND ".join(f'"{term}"' for term in terms)
+    clean_operator = "OR" if operator.upper() == "OR" else "AND"
+    return f" {clean_operator} ".join(f'"{term}"' for term in terms)
+
+
+def _query_terms(query: str) -> list[str]:
+    terms = re.findall(r"[\w-]+", query.lower())
+    clean_terms = []
+    seen = set()
+    for term in terms:
+        if term in seen:
+            continue
+        clean_terms.append(term)
+        seen.add(term)
+    return clean_terms
