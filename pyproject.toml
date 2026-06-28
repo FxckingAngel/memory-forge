@@ -1,0 +1,36 @@
+[project]
+name = "memory-forge"
+version = "0.1.0"
+description = "Local-first MCP memory backend for AI clients."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+  { name = "Memory Forge contributors" }
+]
+keywords = ["mcp", "ai", "memory", "sqlite", "codex", "claude"]
+dependencies = [
+  "mcp>=1.10.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/FxckingAngel/memory-forge"
+Repository = "https://github.com/FxckingAngel/memory-forge"
+Issues = "https://github.com/FxckingAngel/memory-forge/issues"
+
+[project.scripts]
+memory-forge = "memory_forge.server:main"
+memory-forge-setup = "memory_forge.setup:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
