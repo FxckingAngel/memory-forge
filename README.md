@@ -148,6 +148,44 @@ Add a stdio MCP server entry that launches Memory Forge from this checkout:
 }
 ```
 
+To make Memory Forge the single durable memory source for Codex, also disable
+Codex's built-in memory generation and injection:
+
+```toml
+[features]
+memories = false
+
+[memories]
+use_memories = false
+generate_memories = false
+disable_on_external_context = true
+```
+
+Full local `~/.codex/config.toml` example:
+
+```toml
+[features]
+memories = false
+
+[memories]
+use_memories = false
+generate_memories = false
+disable_on_external_context = true
+
+[mcp_servers.memory_forge]
+command = "uv"
+args = ["--directory", "C:\\Users\\notal\\Downloads\\Better Memory", "run", "memory-forge"]
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+enabled = true
+
+[mcp_servers.memory_forge.env]
+MEMORY_FORGE_DB = "C:\\Users\\notal\\.memory-forge\\memory.db"
+```
+
+Restart Codex after editing config. In the Codex TUI, run `/mcp` to confirm
+that `memory_forge` is active.
+
 ## Claude Code MCP Example
 
 From this checkout:

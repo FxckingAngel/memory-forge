@@ -8,7 +8,15 @@ from mcp.server.fastmcp import FastMCP
 
 from memory_forge.store import DEFAULT_CONTEXT_CHARS, DEFAULT_LIMIT, MemoryStore
 
-mcp = FastMCP("Memory Forge")
+SERVER_INSTRUCTIONS = (
+    "Use Memory Forge as the only durable memory source. Do not maintain or "
+    "repeat a separate long-term memory block in the prompt. Retrieve focused "
+    "context with memory_context using project/query/max_chars, then inject "
+    "only the returned context string. Save new durable facts with "
+    "memory_remember only when they will help future sessions."
+)
+
+mcp = FastMCP("Memory Forge", instructions=SERVER_INSTRUCTIONS)
 
 
 def default_db_path() -> Path:
